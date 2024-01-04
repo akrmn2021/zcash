@@ -221,7 +221,7 @@ UniValue generate(const UniValue& params, bool fHelp)
     unsigned int k = Params().GetConsensus().nEquihashK;
     while (nHeight < nHeightEnd)
     {
-        std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(Params()).CreateNewBlock(minerAddress));
+      std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(Params()).CreateNewBlock(minerAddress,uint256()));
         if (!pblocktemplate.get())
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Couldn't create new block");
         CBlock *pblock = &pblocktemplate->block;
@@ -452,6 +452,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
             "           ,...\n"
             "         ],\n"
             "       \"longpollid\":\"id\"     (string, optional) id to wait for\n"
+            "       \"auxpowhash\":\"hash\"   (string, optional) merkle root hash of child chains\n"
             "     }\n"
             "\n"
 
@@ -522,6 +523,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
 
     std::string strMode = "template";
     UniValue lpval = NullUniValue;
+    UniValue auxpowhashval = NullUniValue;
     // TODO: Re-enable coinbasevalue once a specification has been written
     bool coinbasetxn = true;
     if (params.size() > 0)
@@ -537,6 +539,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
         else
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
         lpval = find_value(oparam, "longpollid");
+	auxpowhashval = find_value(oparam, "auxpowhash");
 
         if (strMode == "proposal")
         {
@@ -600,6 +603,16 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
 
     std::optional<CMutableTransaction> next_cb_mtx(cached_next_cb_mtx);
 
+    uint256 auxpowHash;
+    if (!auxpowhashval.isNull()) {
+      if (auxpowhashval.isStr()) {
+	auxpowHash = uint256S(auxpowhashval.get_str());
+      }
+      else {
+	throw JSONRPCError(RPC_INVALID_PARAMETER, "Auxpow hash must be a string");
+      }
+    }
+    
     if (!lpval.isNull())
     {
         // Wait to respond until either the best block changes, OR some time passes and there are more transactions
@@ -640,7 +653,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
                 if (!cached_next_cb_mtx && IsShieldedMinerAddress(minerAddress)) {
                     cached_next_cb_height = nHeight + 2;
                     cached_next_cb_mtx = CreateCoinbaseTransaction(
-                        Params(), CAmount{0}, minerAddress, cached_next_cb_height);
+								   Params(), CAmount{0}, minerAddress, cached_next_cb_height, auxpowHash);
                     next_cb_mtx = cached_next_cb_mtx;
                 }
                 bool timedout = g_best_block_cv.wait_until(lock, checktxtime) == std::cv_status::timeout;
@@ -668,7 +681,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
             throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Shutting down");
         // TODO: Maybe recheck connections/IBD and (if something wrong) send an expires-immediately template to stop miners?
     }
-
+    
     // Update block
     static CBlockIndex* pindexPrev;
     static int64_t nStart;
@@ -699,10 +712,10 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
 
         // Throw an error if no address valid for mining was provided.
         if (!std::visit(IsValidMinerAddress(), minerAddress)) {
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "No miner address available (mining requires a wallet or -mineraddress)");
+	  throw JSONRPCError(RPC_INTERNAL_ERROR, "No miner address available (mining requires a wallet or -mineraddress)");
         }
 
-        pblocktemplate = BlockAssembler(Params()).CreateNewBlock(minerAddress, next_cb_mtx);
+        pblocktemplate = BlockAssembler(Params()).CreateNewBlock(minerAddress, auxpowHash, next_cb_mtx);
         if (!pblocktemplate)
             throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
 
@@ -747,7 +760,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
                 deps.push_back(setTxIndex[in.prevout.hash]);
         }
         entry.pushKV("depends", deps);
-
+	
         int index_in_template = i - 1;
         entry.pushKV("fee", pblocktemplate->vTxFees[index_in_template]);
         entry.pushKV("sigops", pblocktemplate->vTxSigOps[index_in_template]);
@@ -761,6 +774,23 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
                 entry.pushKV("foundersreward", nBlockSubsidy / 5);
             }
             entry.pushKV("required", true);
+	    std::vector<uint256> vMerkleBranch = BlockMerkleBranch(*pblock,0);
+	    size_t vMerkleBranchSize = vMerkleBranch.size();
+	    char* vMerkleBranchHex = (char*)malloc(10+vMerkleBranchSize*64+1);
+	    if (vMerkleBranchSize<253) {
+	      sprintf(vMerkleBranchHex,"%02x",(unsigned char)vMerkleBranchSize);
+	    }
+	    else if (vMerkleBranchSize<65536) {
+	      sprintf(vMerkleBranchHex,"fd%04x",(((uint16_t)vMerkleBranchSize)>>8)|(((uint16_t)vMerkleBranchSize<<8)));
+	    }
+	    else {
+	      throw JSONRPCError(RPC_INTERNAL_ERROR, "Coinbase merkle branch too large");
+	    }
+	    for (int iBranch = 0; iBranch < vMerkleBranchSize; iBranch++) {
+	      uint256 branchHash = vMerkleBranch[iBranch];
+	      strcat(vMerkleBranchHex,HexStr(branchHash.begin(),branchHash.end()).c_str());
+	    }
+	    entry.pushKV("vmerklebranch",std::string(vMerkleBranchHex));
             txCoinbase = entry;
         } else {
             transactions.push_back(entry);

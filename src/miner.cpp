@@ -279,7 +279,7 @@ public:
     }
 };
 
-CMutableTransaction CreateCoinbaseTransaction(const CChainParams& chainparams, CAmount nFees, const MinerAddress& minerAddress, int nHeight)
+CMutableTransaction CreateCoinbaseTransaction(const CChainParams& chainparams, CAmount nFees, const MinerAddress& minerAddress, int nHeight, uint256 auxpowHash)
 {
         CMutableTransaction mtx = CreateNewContextualCMutableTransaction(
                 chainparams.GetConsensus(), nHeight,
@@ -300,7 +300,24 @@ CMutableTransaction CreateCoinbaseTransaction(const CChainParams& chainparams, C
             AddOutputsToCoinbaseTxAndSign(mtx, chainparams, nHeight, nFees),
             minerAddress);
 
-        mtx.vin[0].scriptSig = CScript() << nHeight << OP_0;
+	if (auxpowHash.IsNull()) {
+	  mtx.vin[0].scriptSig = CScript() << nHeight << CScriptNum(0);
+	}
+	else {
+	  std::vector<unsigned char> auxpowData;
+	  auxpowData.push_back(0xfa);
+	  auxpowData.push_back(0xbe);
+	  auxpowData.push_back('m');
+	  auxpowData.push_back('m');
+	  std::vector<unsigned char> auxpowHashVec = ToByteVector(auxpowHash);
+	  std::reverse(auxpowHashVec.begin(),auxpowHashVec.end());
+	  auxpowData.insert(auxpowData.end(),auxpowHashVec.begin(),auxpowHashVec.end());
+	  int nSizeAuxpow = 1;
+	  int nNonceAuxpow = 0;
+	  auxpowData.insert(auxpowData.end(),UBEGIN(nSizeAuxpow),UEND(nSizeAuxpow));
+	  auxpowData.insert(auxpowData.end(),UBEGIN(nNonceAuxpow),UEND(nNonceAuxpow));
+	  mtx.vin[0].scriptSig = CScript() << nHeight << CScriptNum(0) << auxpowData;
+	}
         return mtx;
 }
 
@@ -344,6 +361,7 @@ void BlockAssembler::resetBlock(const MinerAddress& minerAddress)
 
 CBlockTemplate* BlockAssembler::CreateNewBlock(
     const MinerAddress& minerAddress,
+    const uint256 auxpowHash,
     const std::optional<CMutableTransaction>& next_cb_mtx)
 {
     resetBlock(minerAddress);
@@ -418,7 +436,7 @@ CBlockTemplate* BlockAssembler::CreateNewBlock(
     if (next_cb_mtx) {
         pblock->vtx[0] = *next_cb_mtx;
     } else {
-        pblock->vtx[0] = CreateCoinbaseTransaction(chainparams, nFees, minerAddress, nHeight);
+      pblock->vtx[0] = CreateCoinbaseTransaction(chainparams, nFees, minerAddress, nHeight,auxpowHash);
     }
     pblocktemplate->vTxFees[0] = -nFees;
 
@@ -895,7 +913,7 @@ void static BitcoinMiner(const CChainParams& chainparams)
                 continue;
             }
 
-            unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(chainparams).CreateNewBlock(minerAddress));
+            unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(chainparams).CreateNewBlock(minerAddress,uint256()));
             if (!pblocktemplate.get())
             {
                 if (GetArg("-mineraddress", "").empty()) {
