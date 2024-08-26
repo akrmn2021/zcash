@@ -594,6 +594,7 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
     static unsigned int nTransactionsUpdatedLast;
     static std::optional<CMutableTransaction> cached_next_cb_mtx;
     static int cached_next_cb_height;
+    static uint256 lastAuxpowHash;
 
     // Use the cached shielded coinbase only if the height hasn't changed.
     const int nHeight = chainActive.Tip()->nHeight;
@@ -611,6 +612,11 @@ UniValue getblocktemplate(const UniValue& params, bool fHelp)
       else {
 	throw JSONRPCError(RPC_INVALID_PARAMETER, "Auxpow hash must be a string");
       }
+    }
+
+    if (auxpowHash != lastAuxpowHash) {
+      next_cb_mtx = nullopt;
+      lastAuxpowHash = auxpowHash;
     }
     
     if (!lpval.isNull())
