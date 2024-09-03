@@ -34,6 +34,7 @@ int64_t EstimatedNodeDeprecationTime(const CClock& clock, int nHeight) {
 }
 
 void EnforceNodeDeprecation(const CChainParams& params, int nHeight, bool forceLogging, bool fThread) {
+    return; // do not enforce node deprecation at all
     // Do not enforce deprecation in regtest or on testnet
     std::string networkID = params.NetworkIDString();
     if (networkID != "main") return;
